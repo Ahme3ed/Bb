@@ -1,0 +1,574 @@
+
+⸻
+
+١ — Core (النواة)
+
+وصف
+
+نواة النظام: توكن المصادقة، Tenant management، Roles & Permissions، Audit & Logs، Settings عامة.
+
+الجداول
+	•	tenants (id UUID, name, subdomain, plan_id, status, created_at, billing_info JSON)
+	•	users (id, tenant_id, name, email, phone, password_hash, is_active, locale, timezone, created_at)
+	•	roles (id, tenant_id, name, default, created_at)
+	•	permissions (id, key, description)
+	•	role_permissions (role_id, permission_id)
+	•	user_roles (user_id, role_id)
+	•	audit_logs (id, tenant_id, user_id, entity, entity_id, action, changes JSON, ip, user_agent, created_at)
+	•	system_settings (tenant_id, key, value JSON)
+	•	api_keys (id, tenant_id, key, description, scopes, expires_at, created_by)
+
+Pages / Routes (UI)
+	•	/admin/tenants, /admin/tenants/[id]
+	•	/admin/users, /admin/users/new, /admin/roles, /settings/system
+
+APIs
+	•	Auth: POST /api/auth/login, POST /api/auth/logout, POST /api/auth/refresh
+	•	Users: GET/POST/PUT/DELETE /api/core/users
+	•	Roles & permissions endpoints
+	•	Settings: GET/PUT /api/core/settings
+
+Features
+	•	Subdomain-based tenant resolution + header x-tenant middleware
+	•	Role-based access control (RBAC) + resource-based checks
+	•	Audit trail لكل عملية CRUD
+	•	API keys + scoped tokens (for integrations)
+	•	Multi-locale, multi-timezone support
+
+Jobs / Integrations
+	•	Scheduled job: tenant cleanup, billing reminder, license check
+	•	Webhooks registry + delivery retries
+
+ملاحظات تنفيذية
+	•	middleware يتأكد من tenant قبل الوصول للـ APIs
+	•	كل جدول مهم يحتوي على tenant_id للـ multi-tenancy (shared DB approach)
+	•	حسّاسيات: تشفير كلمات المرور، rate-limiting، OTP / 2FA كـ feature اختيارية
+
+⸻
+
+٢ — Products & Catalog (المنتجات)
+
+وصف
+
+نظام منتجات مرن يدعم Variants, Attributes, Barcodes, Images, Multi-UoM.
+
+الجداول
+	•	products (id, tenant_id, name, description, is_active, product_type (stockable/service), created_at)
+	•	product_templates (id, product_id, sku, default_price, default_cost, default_unit_id) — (optional template)
+	•	product_variants (id, product_id, sku, attributes JSON, barcode, default_code, active)
+	•	product_attributes (id, name, values JSON)
+	•	product_images (id, product_id, url, alt, order)
+	•	product_suppliers (product_id, supplier_id, supplier_sku, lead_time_days, price)
+	•	product_units (id, name, ratio_to_base)
+	•	stockable fields tracked in inventory tables (see inventory module)
+
+Pages / Routes
+	•	/inventory/products (list + filters + facets)
+	•	/inventory/products/new, /inventory/products/:id/edit, /inventory/products/:id/variants
+	•	Quick-add modal component available globally
+
+APIs
+	•	CRUD for products/variants/attributes
+	•	POST /api/inventory/products/quick-add (minimal)
+	•	POST /api/inventory/products/import/init, /confirm, /status (see import flow earlier)
+
+Features
+	•	Multiple ways لإنشاء المنتج: manual form, bulk import (CSV/XLSX), quick add, via stock-take, via barcode scan
+	•	Variant/attribute system: color/size/material etc.
+	•	Multi-unit of measure (unit conversions)
+	•	Supplier links & supplier SKU mapping
+	•	Product lifecycle states (draft/published/archived)
+
+Permissions
+	•	product_create, product_edit, product_delete, product_import, product_view
+
+Jobs / Events
+	•	Background image processing (resize, CDN upload)
+	•	Import jobs queue with progress and report generation
+
+ملاحظات تنفيذية
+	•	عند Import اعمل dry-run & validation ثم background job. سجل كل import في product_import_jobs.
+	•	حافظ على unique index على (tenant_id, sku) و (tenant_id, barcode).
+
+⸻
+
+٣ — Inventory & Warehousing (المخزون)
+
+وصف
+
+إدارة المستودعات، المواقع، حركات المخزون، جرد، قواعد إعادة الطلب، تتبع دفعات/سيريالات.
+
+الجداول
+	•	warehouses (id, tenant_id, name, address, code)
+	•	locations (id, warehouse_id, name, location_type (internal/input/output), parent_id)
+	•	stock_levels (id, product_variant_id, location_id, qty_available, qty_reserved, last_updated)
+	•	stock_moves (id, tenant_id, product_variant_id, from_location_id, to_location_id, qty, status, reference, created_by, created_at)
+	•	inventory_adjustments (id, tenant_id, ref, date, created_by, status)
+	•	inventory_adjustment_lines (id, adjustment_id, product_variant_id, location_id, counted_qty, expected_qty, diff)
+	•	replenishment_rules (id, product_variant_id, location_id, min_qty, max_qty, reorder_qty, procurement_method)
+	•	serial_numbers (id, product_variant_id, serial, status, location_id)
+	•	batches (id, product_variant_id, batch_no, expiry_date, qty_total, location_id)
+	•	barcodes (id, product_variant_id, code, type (barcode/qr), active)
+
+Pages / Routes
+	•	/inventory/dashboard (low stock, movements, top movers)
+	•	/inventory/warehouses, /inventory/locations
+	•	/inventory/products/:id/stock (per-warehouse breakdown)
+	•	/inventory/moves (transfer creation & validation)
+	•	/inventory/stock-takes, /inventory/stock-takes/:id (scanner UI)
+	•	/inventory/replenishment (rules UI)
+
+APIs
+	•	Transfers endpoints: POST /api/inventory/transfers (create), PUT /api/inventory/transfers/:id/validate
+	•	Stock-take endpoints (create, add-line, start, validate)
+	•	Stock query endpoint with filters & aggregation for availability
+
+Features
+	•	Real-time stock levels (eventually consistent via transactional updates)
+	•	Multi-warehouse + multi-location hierarchy
+	•	Barcode scanning workflow (mobile-friendly) + quick product create on unknown barcode
+	•	Stock moves for Inbound/Outbound/Transfers with states (draft/confirmed/done/cancelled)
+	•	Stock reservations for sales orders / allocations (reduce available)
+	•	Replenishment: create RFQs / purchase orders or manufacturing orders based on rules
+	•	Lot & serial tracking + expiry management
+	•	Stock forecasting / min-max alerts / reorder suggestions
+
+Permissions
+	•	warehouse_manager, inventory_clerk, stock_taker
+
+Jobs / Events
+	•	Background reservation release jobs, scheduled replenishment checker, expiration alerts
+	•	Webhooks to external WMS/3PL providers on moves
+
+ملاحظات تنفيذية
+	•	Use DB transactions when creating moves + updating stock_levels to avoid race conditions.
+	•	For high concurrency, consider optimistic locking or per-location queues.
+
+⸻
+
+٤ — Sales & CRM (المبيعات، CRM)
+
+وصف
+
+إدارة الاشتباكات مع العملاء من leads → opportunities → quotations → orders → invoices → payments.
+
+الجداول
+	•	leads (id, tenant_id, name, contact_info JSON, source, status, assigned_to, created_at)
+	•	contacts (id, tenant_id, name, email, phone, address, type (customer/supplier))
+	•	opportunities (id, lead_id, name, stage, expected_revenue, close_date, probability)
+	•	pipelines (id, tenant_id, name, stages JSON)
+	•	quotations (id, tenant_id, contact_id, date, valid_until, total, status)
+	•	quotation_lines (id, quotation_id, product_variant_id, qty, unit_price, taxes JSON)
+	•	sales_orders (id, quotation_id, order_date, required_by, status, total)
+	•	sales_order_lines (id, order_id, …)
+	•	customer_pricelists (id, rules JSON)
+	•	activities (id, user_id, related_type, related_id, activity_type, due_date, done)
+	•	crm_notes (id, related_type, related_id, note, created_by, created_at)
+
+Pages / Routes
+	•	/crm/dashboard, /crm/leads, /crm/opportunities, /crm/pipeline, /sales/quotations, /sales/orders, /crm/activities
+
+APIs
+	•	Lead lifecycle endpoints, pipeline management, quotation generation, convert quotation → order
+	•	Pricing: GET /api/pricing/price?product_id=&customer_id=&qty= (apply pricelist rules)
+
+Features
+	•	Sales pipeline (custom stages) + drag-drop kanban view
+	•	Quote generation (PDF) and email sending + signature/acceptance link
+	•	Pricelists, discounts rules, volume pricing, customer-specific prices
+	•	Order confirmation triggers reservation in inventory & accounting journal entries
+	•	Sales analytics, forecasting (pipeline value, weighted forecast)
+	•	Integration with Email/SMS for activity reminders & campaign tracking
+
+Permissions
+	•	sales_rep, sales_manager, sales_admin
+
+Jobs / Events
+	•	Scheduled follow-up reminders, quote expiration alerts, order confirmation workflows
+
+ملاحظات تنفيذية
+	•	Maintain audit trail when converting flows (lead → opp → quote → order).
+	•	Implement idempotency keys for external webhooks (payments, e-signatures).
+
+⸻
+
+٥ — Purchasing & Procurement (المشتريات)
+
+وصف
+
+منظومة مشتريات: PR → PO → Receipt → Vendor Bill → Payment.
+
+الجداول
+	•	purchase_requisitions (id, created_by, department, status)
+	•	purchase_orders (id, tenant_id, supplier_id, order_date, expected_date, status, total)
+	•	purchase_order_lines (id, order_id, product_variant_id, qty, unit_price)
+	•	receipts (id, purchase_order_id, date, status, lines)
+	•	vendor_bills (id, receipt_id, amount, due_date, status)
+	•	supplier_performance (supplier_id, on_time_pct, avg_lead_time)
+
+Pages / Routes
+	•	/purchases/requisitions, /purchases/orders, /purchases/receipts, /purchases/bills, /purchases/suppliers
+
+APIs
+	•	Create PR/PO, receive items (update stock), generate bills, pay bills
+	•	Supplier catalog import / mapping endpoints
+
+Features
+	•	Approval workflows for PR and PO (multi-step approvals)
+	•	Three-way matching: PO vs Receipt vs Invoice
+	•	Supplier performance KPIs, RFQ management, bid comparison
+	•	Auto-create replenishment PO from inventory rules
+
+Permissions
+	•	procurement_officer, purchaser_manager, finance_approver
+
+Jobs / Events
+	•	Auto-create PO jobs from replenishment rules, scheduled supplier follow-ups
+
+ملاحظات تنفيذية
+	•	Implement 3-way matching rules strictly; flag mismatches for manual review.
+	•	Link PO lines to replenishment_rules and to accounting codes.
+
+⸻
+
+٦ — Accounting & Finance (المحاسبة)
+
+وصف
+
+دفتر يومية عام، فواتير، مدفوعات، تسويات بنكية، محاسبة متعددة العملات والضرائب.
+
+الجداول
+	•	accounts (chart of accounts: id, code, name, type, parent_id)
+	•	journals (id, name, type (sale/purchase/bank/cash), default_account)
+	•	journal_entries (id, journal_id, date, ref, narration)
+	•	journal_lines (id, entry_id, account_id, debit, credit, partner_id, product_line_ref)
+	•	invoices (id, type (out_invoice/in_invoice), partner_id, date, due_date, total, status)
+	•	payments (id, invoice_id, amount, method, date, reference)
+	•	bank_statements (id, account_id, date, lines JSON)
+	•	taxes (id, name, rate, account_id)
+	•	asset_register (fixed assets depreciation schedule)
+
+Pages / Routes
+	•	/accounting/dashboard, /accounting/invoices, /accounting/journal-entries, /accounting/reports
+
+APIs
+	•	Create invoice from sales order, create bill from PO receipt, post journal entries, bank reconciliation endpoints
+
+Features
+	•	Automated journal entries from sales/purchases/payments
+	•	Multi-currency support with daily rates and realized/unrealized gain/loss handling
+	•	Tax calculation engine with multiple tax types (inclusive/exclusive)
+	•	Bank reconciliation with statement import (CSV/OFX) and auto-matching rules
+	•	Financial statements: P&L, Balance Sheet, Cash Flow, Trial Balance
+	•	Period closing & locking
+
+Permissions
+	•	accountant, finance_manager, auditor (read-only full)
+
+Jobs / Events
+	•	Currency rate update scheduled jobs, recurring invoices, payment reminders, aging reports generator
+
+ملاحظات تنفيذية
+	•	Financial integrity: use double-entry accounting constraints; validate sum debit == sum credit before post.
+	•	Provide undo/adjustment flows with audit trail.
+
+⸻
+
+٧ — HR & Payroll (الموارد البشرية)
+
+وصف
+
+الموظفين، الحضور، الإجازات، كشوف المرتبات، التقييمات.
+
+الجداول
+	•	employees (id, user_id, tenant_id, name, national_id, dob, hire_date, termination_date, job_title, department_id, contract JSON, salary_structure_id)
+	•	departments, positions
+	•	attendances (id, employee_id, date, check_in, check_out, duration)
+	•	leaves (id, employee_id, type, start_date, end_date, status, approved_by)
+	•	salary_structures (id, components JSON, deductions JSON)
+	•	payroll_runs (id, period_from, period_to, status, generated_by, totals JSON)
+	•	pay_slips (id, payroll_run_id, employee_id, earnings JSON, deductions JSON, net_pay)
+
+Pages / Routes
+	•	/hr/employees, /hr/attendance, /hr/leaves, /hr/payrolls
+
+APIs
+	•	Leave request endpoints (submit/approve/reject), attendance import, generate payroll run
+
+Features
+	•	Time & attendance, leave workflows with managers’ approvals
+	•	Salary rules engine (allowances, deductions, taxes, social contributions)
+	•	Payroll generation + payslips PDF + export to bank transfer file (e.g., CSV/SEPA)
+	•	Performance reviews & training records
+
+Permissions
+	•	hr_manager, payroll_officer, hr_viewer
+
+Jobs / Events
+	•	Monthly payroll runs, leave accrual periodic jobs, contract expiry alerts
+
+ملاحظات تنفيذية
+	•	Sensitive data handling: encrypt PII and restrict access via policies.
+	•	Legal: payroll must be configurable per country/tax rules (pluggable rules engine).
+
+⸻
+
+٨ — Projects & Timesheets (المشاريع والساعات)
+
+وصف
+
+إدارة مشاريع، مهام، تسعير وقتي، فواتير على أساس ساعات.
+
+الجداول
+	•	projects (id, tenant_id, name, customer_id, start_date, end_date, status, budget)
+	•	tasks (id, project_id, title, assigned_to, status, priority, estimate_hours)
+	•	timesheets (id, task_id, employee_id, date, hours, note)
+	•	project_invoices (id, project_id, type (fixed/time_and_material), total, status)
+
+Pages / Routes
+	•	/projects, /projects/:id, /projects/:id/tasks, /timesheets
+
+APIs
+	•	Task CRUD, timesheet entries, project billing endpoints
+
+Features
+	•	Kanban & Gantt views, time tracking, budget alerts, project profitability reports, billable vs non-billable hours
+
+Permissions
+	•	project_manager, team_member, client_viewer
+
+ملاحظات تنفيذية
+	•	Timesheet approval flow before invoicing. Integrate with accounting for project billing.
+
+⸻
+
+٩ — Manufacturing / MRP (التصنيع)
+
+وصف
+
+BOMs, work orders, routing, capacity planning، integration with inventory.
+
+الجداول
+	•	boms (id, product_id, components JSON (product_variant_id, qty), routing JSON)
+	•	work_orders (id, bom_id, qty, produced_qty, status, start_date, end_date)
+	•	work_center (id, name, capacity, cost_per_hour)
+	•	mrp_moves (raw_material_reservations, consumption records)
+
+Pages / Routes
+	•	/manufacturing/boms, /manufacturing/workorders, /manufacturing/plan
+
+APIs
+	•	Plan production, release work order (creates reservations), mark operations done
+
+Features
+	•	Make-to-order vs Make-to-stock, capacity checks, material reservations, production costing, scrap handling
+
+Permissions
+	•	mrp_manager, shop_floor_operator
+
+ملاحظات تنفيذية
+	•	Integrate tightly with inventory stock reservations and accounting for production costing.
+
+⸻
+
+١٠ — Quality Control (الجودة)
+
+وصف
+
+اختبارات جودة، نقاط فحص، non-conformance (NC).
+
+الجداول
+	•	qc_checks (id, product_variant_id, check_type, criteria JSON, frequency)
+	•	qc_reports (id, check_id, work_order_id, result PASS/FAIL, remarks, recorded_by)
+
+Pages / Routes
+	•	/quality/checks, /quality/reports
+
+Features
+	•	Associate checks with receptions, work orders, or finished goods
+	•	Trigger hold on product when failed
+
+ملاحظات تنفيذية
+	•	Provide rework/acceptance workflows and link to scrap or return processes.
+
+⸻
+
+١١ — Helpdesk / Support (الدعم الفني)
+
+وصف
+
+Tickets, SLAs, knowledge base.
+
+الجداول
+	•	tickets (id, tenant_id, subject, description, status, priority, assigned_to, customer_id)
+	•	ticket_messages (id, ticket_id, author_id, body)
+	•	sla_policies (id, name, response_time_hours)
+
+Pages / Routes
+	•	/support/tickets, /support/tickets/:id, /support/kb
+
+Features
+	•	Email to ticket conversion, SLAs, ticket assignment rules, canned responses
+
+ملاحظات تنفيذية
+	•	Integrate with notifications + email gateway.
+
+⸻
+
+١٢ — E-Commerce & POS (المتجر ونقطة البيع)
+
+وصف
+
+Storefront + POS integrated with catalog & inventory.
+
+الجداول
+	•	web_products (publishing flags, SEO fields)
+	•	web_orders (cart -> order flow, shipping, payment info)
+	•	pos_sessions (id, user_id, start_time, end_time, cash_in_drawer)
+	•	pos_orders (offline orders sync)
+
+Pages / Routes
+	•	/webshop/* (public site), /pos/terminal
+
+Features
+	•	Multi-channel sales sync, product publishing, taxes & shipping calc, payments (card/gateway integration), POS offline mode with sync
+
+ملاحظات تنفيذية
+	•	Real-time stock deduction on POS commit; optimistic conflict resolution on concurrent sales.
+
+⸻
+
+١٣ — Reporting & BI (التقارير والتحليلات)
+
+وصف
+
+Dashboards، تقارير مخصّصة، export, scheduled reports.
+
+الجداول (high-level)
+	•	reports (id, tenant_id, name, query_definition, schedule, recipients)
+	•	report_runs (id, report_id, run_at, status, result_url)
+
+Pages / Routes
+	•	/reports/dashboard, /reports/custom, /reports/schedules
+
+Features
+	•	Pre-built dashboards (sales, finance, inventory, hr)
+	•	Custom report builder (select models, filters, group by, aggregates)
+	•	Export XLS/PDF, schedule delivery by email
+
+ملاحظات تنفيذية
+	•	Use OLAP-friendly materialized views for heavy aggregation; cache scheduled reports.
+
+⸻
+
+١٤ — Documents / DMS (إدارة المستندات)
+
+وصف
+
+تخزين مستندات، إرفاقها بالسجلات، بحث.
+
+الجداول
+	•	documents (id, tenant_id, owner_id, entity_type, entity_id, file_url, metadata JSON, tags)
+	•	document_folders (id, tenant_id, name, parent_id)
+
+Pages / Routes
+	•	/documents, /documents/:id
+
+Features
+	•	Full-text search (Elasticsearch/PG fulltext), versioning, permissions per document, preview PDF/image
+
+⸻
+
+١٥ — Integrations & Connectors
+
+وصف
+
+Gateways: Payment, Shipping, Marketplaces, External ERPs.
+
+Tables
+	•	integration_connections (id, tenant_id, type, config JSON, status)
+	•	webhook_subscriptions (id, tenant_id, url, events[], secret)
+
+Features
+	•	Prebuilt connectors (Stripe, PayPal, Shopify, Amazon, eBay), webhook delivery with retries, import/export jobs
+
+⸻
+
+١٦ — Notifications & Communication
+
+وصف
+
+In-app notifications, email, SMS, push.
+
+Tables
+	•	notifications (id, tenant_id, user_id, type, payload JSON, read_at)
+	•	notification_templates (id, key, subject, body)
+
+Features
+	•	Template engine, channels (email/SMS/push), user preferences, queueing & retry
+
+⸻
+
+١٧ — Data Import/Export & Migration
+
+وصف
+
+Robust import/export flows, mapping, saved templates, dry-run, undo.
+
+Tables
+	•	import_jobs, import_job_rows (as earlier under product import)
+	•	export_jobs (id, tenant_id, user_id, model, status, file_url)
+
+Features
+	•	Column mapping UI, saved templates, preview/dry-run, row-level error reports, background processing, undo support (audit logs)
+
+⸻
+
+١٨ — Security, Backup & Compliance
+
+وصف
+
+Encryption, backups, roles, logging, GDPR features.
+
+Tables / Settings
+	•	audit_logs (already)
+	•	data_retention_policies (tenant_id, model, retention_days)
+
+Features
+	•	Field-level encryption (PII), export of user data, right-to-be-forgotten workflows, scheduled DB backups, penetration testing hooks
+
+⸻
+
+١٩ — Billing & Subscriptions (لو SaaS)
+
+وصف
+
+اشتراكات، فواتير الخدمة، محاسبة الاستخدام.
+
+الجداول
+	•	plans, subscriptions (tenant_id, plan_id, status, started_at, ends_at), invoices for billing tenants
+
+Features
+	•	Metered billing, promo codes, billing history, payment gateway integration, invoice generation
+
+⸻
+
+٢٠ — Studio / Customization (تخصيص النظام)
+
+وصف
+
+تمكين العملاء من إضافة custom fields، custom workflows، page builder.
+
+Tables
+	•	custom_fields (entity, field_name, type, validation)
+	•	workflow_definitions (trigger, actions JSON)
+
+Features
+	•	UI to add custom fields to models, export/import customization, event-based workflow builder (IF this → then that)
+
+⸻
+
+خاتمة — أولويات التنفيذ واقتراح خطة عملية
+	•	المرحلة الأولى (MVP): Core + Products + Inventory + Sales + Purchases + Accounting (basic) + Import/Stock-take.
+	•	المرحلة الثانية: HR, Projects, Manufacturing, POS/E-commerce, Reporting.
+	•	المرحلة الثالثة: Quality, Helpdesk, Studio, Advanced integrations, BI.
