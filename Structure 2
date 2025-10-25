@@ -1,0 +1,735 @@
+
+⸻
+
+1 — Core Module
+
+Description: Tenant handling, users, roles & permissions, audit logs, system settings.
+
+Tables:
+	•	tenants (id UUID, name, subdomain, plan_id, status, created_at, billing_info JSON)
+	•	users (id, tenant_id, name, email, phone, password_hash, is_active, locale, timezone, created_at)
+	•	roles (id, tenant_id, name, is_default, created_at)
+	•	permissions (id, key, description)
+	•	role_permissions (role_id, permission_id)
+	•	user_roles (user_id, role_id)
+	•	audit_logs (id, tenant_id, user_id, entity, entity_id, action, changes JSON, ip, user_agent, created_at)
+	•	system_settings (tenant_id, key, value JSON)
+	•	api_keys (id, tenant_id, key, description, scopes, expires_at, created_by)
+
+Pages / Routes:
+	•	/admin/tenants, /admin/tenants/[id]
+	•	/admin/users, /admin/users/new, /admin/roles, /settings/system
+
+API Endpoints:
+	•	Authentication: POST /api/auth/login, POST /api/auth/logout, POST /api/auth/refresh
+	•	Users CRUD: GET/POST/PUT/DELETE /api/core/users
+	•	Roles & Permissions management
+	•	Settings: GET/PUT /api/core/settings
+
+Features:
+	•	Subdomain-based tenant identification
+	•	Role-Based Access Control (RBAC)
+	•	Audit trail for all CRUD operations
+	•	Scoped API keys for integration
+	•	Multi-locale / multi-timezone support
+
+Jobs / Integrations:
+	•	Scheduled tenant cleanup, billing reminders
+	•	Webhook delivery system with retries
+
+Implementation Notes:
+	•	Middleware must fetch tenant from request and enforce tenancy
+	•	All primary tables include tenant_id for multi-tenancy
+	•	Secure password handling, rate limiting, optional 2FA
+
+⸻
+
+2 — Products & Catalog
+
+Description: Product management inclusive of variants, attributes, barcodes, images, suppliers.
+
+Tables:
+	•	products (id, tenant_id, name, description, is_active, product_type (stockable/service), created_at)
+	•	product_templates (id, product_id, sku, default_price, default_cost, default_unit_id)
+	•	product_variants (id, product_id, sku, attributes JSON, barcode, default_code, active)
+	•	product_attributes (id, name, values JSON)
+	•	product_images (id, product_id, url, alt_text, display_order)
+	•	product_suppliers (product_id, supplier_id, supplier_sku, lead_time_days, price)
+	•	product_units (id, unit_name, abbreviation, ratio_to_base_unit)
+
+Pages / Routes:
+	•	/inventory/products
+	•	/inventory/products/new, /inventory/products/[id]/edit, /inventory/products/[id]/variants
+	•	Quick-add modal available globally
+
+API Endpoints:
+	•	CRUD: POST /api/inventory/products, PUT /api/inventory/products/:id, etc.
+	•	Quick add: POST /api/inventory/products/quick-add
+	•	Bulk import: POST /api/inventory/products/import/init, /confirm, /status
+
+Features:
+	•	Manual product creation, bulk import, quick add, barcode/mobile scan entry
+	•	Variant & attribute support (color, size, etc.)
+	•	Multi-unit of measure conversions
+	•	Supplier links & SKU mapping
+	•	Product lifecycle states (draft/published/archived)
+
+Permissions:
+	•	product_create, product_edit, product_delete, product_import, product_view
+
+Jobs / Events:
+	•	Image processing in background (resize, CDN upload)
+	•	Bulk import job queue with progress tracking and reporting
+
+Implementation Notes:
+	•	Use unique constraints on (tenant_id, sku) and (tenant_id, barcode)
+	•	Import flow: dry-run → transactional commit → audit logs
+
+⸻
+
+3 — Inventory & Warehousing
+
+Description: Manage warehouses, locations, stock levels, transfers, stock-takes, replenishment.
+
+Tables:
+	•	warehouses (id, tenant_id, name, address, code)
+	•	locations (id, warehouse_id, name, location_type (internal/input/output), parent_location_id)
+	•	stock_levels (id, product_variant_id, location_id, qty_available, qty_reserved, last_updated)
+	•	stock_moves (id, tenant_id, product_variant_id, from_location_id, to_location_id, qty, status, reference, created_by, created_at)
+	•	inventory_adjustments (id, tenant_id, ref, date, created_by, status)
+	•	inventory_adjustment_lines (id, adjustment_id, product_variant_id, location_id, counted_qty, expected_qty, diff)
+	•	replenishment_rules (id, product_variant_id, location_id, min_qty, max_qty, reorder_qty, procurement_method)
+	•	serial_numbers (id, product_variant_id, serial, status, location_id)
+	•	batches (id, product_variant_id, batch_no, expiry_date, qty_total, location_id)
+	•	barcodes (id, product_variant_id, code, type (barcode/qr), is_active)
+
+Pages / Routes:
+	•	/inventory/dashboard
+	•	/inventory/warehouses, /inventory/locations
+	•	/inventory/products/:id/stock
+	•	/inventory/moves
+	•	/inventory/stock-takes, /inventory/stock-takes/:id
+	•	/inventory/replenishment
+
+API Endpoints:
+	•	Create transfer: POST /api/inventory/transfers
+	•	Validate transfer: PUT /api/inventory/transfers/:id/validate
+	•	Stock-take endpoints: create, start, add lines, validate
+	•	Stock query endpoint: GET /api/inventory/stock-levels
+
+Features:
+	•	Real-time stock levels across warehouses and locations
+	•	Barcode / QR scan workflows for mobile
+	•	Transfer workflows (Inbound/Outbound/Internal)
+	•	Stock reservations for orders
+	•	Replenishment automated rule engine
+	•	Serial/lot tracking, expiry management
+
+Permissions:
+	•	warehouse_manager, inventory_clerk, stock_taker
+
+Jobs / Events:
+	•	Scheduled reservations release
+	•	Replenishment job checking min-max and creating POs/Work Orders
+	•	Expiry alert job
+
+Implementation Notes:
+	•	Use transactions to update stock_moves + stock_levels in sync
+	•	Manage concurrent updates (e.g., using optimistic locking or row versioning)
+	•	Consider event sourcing for high-volume warehouses
+
+⸻
+
+4 — Sales & CRM
+
+Description: Lead to opportunity to quote to sale order to invoice to payment lifecycle with pipeline management.
+
+Tables:
+	•	leads (id, tenant_id, name, contact_id, source, status, assigned_to, created_at)
+	•	contacts (id, tenant_id, name, email, phone, address, contact_type (customer/supplier))
+	•	opportunities (id, lead_id, name, stage, expected_revenue, close_date, probability)
+	•	pipelines (id, tenant_id, name, stages JSON)
+	•	quotations (id, tenant_id, contact_id, date, valid_until, total, status)
+	•	quotation_lines (id, quotation_id, product_variant_id, qty, unit_price, taxes JSON)
+	•	sales_orders (id, quotation_id, order_date, required_by, status, total)
+	•	sales_order_lines …
+	•	customer_pricelists (id, tenant_id, rules JSON)
+	•	activities (id, user_id, related_type, related_id, activity_type, due_date, done)
+	•	crm_notes (id, related_type, related_id, note, created_by, created_at)
+
+Pages / Routes:
+	•	/crm/dashboard, /crm/leads, /crm/opportunities, /crm/pipeline, /sales/quotations, /sales/orders, /crm/activities
+
+API Endpoints:
+	•	Lead lifecycle: POST /api/crm/leads, PUT /api/crm/leads/:id/convert
+	•	Pipeline management: GET/PUT /api/crm/pipelines
+	•	Quotation generation: POST /api/sales/quotations, PUT /api/sales/quotations/:id/confirm
+	•	Order to invoice: POST /api/sales/orders/:id/invoice, POST /api/sales/orders/:id/confirm
+
+Features:
+	•	Kanban/UI drag-drop sales pipeline
+	•	Quote to order workflow, PDF generation & email
+	•	Pricelist engine (volume discounts, customer specific pricing)
+	•	Activity scheduling (calls, meetings, emails)
+	•	Sales forecasting (weighted pipeline value)
+	•	Integration with inventory & accounting for automated entries
+
+Permissions:
+	•	sales_rep, sales_manager, sales_admin
+
+Jobs / Events:
+	•	Quote expiry reminders, follow-up tasks, pipeline auto-escalation
+
+Implementation Notes:
+	•	Ensure audit trail for conversions
+	•	Idempotency keys on external events (e.g., payment webhooks)
+	•	Pricing rules engine should be modular and extensible
+
+⸻
+
+5 — Purchasing & Procurement
+
+Description: Procure workflow: requisition → vendor selection → PO → receipt → vendor bill → payment.
+
+Tables:
+	•	purchase_requisitions (id, tenant_id, request_by, department_id, date_requested, status)
+	•	purchase_orders (id, tenant_id, supplier_id, order_date, expected_date, status, total)
+	•	purchase_order_lines (id, order_id, product_variant_id, qty, unit_price)
+	•	receipts (id, purchase_order_id, date, status, total_received)
+	•	vendor_bills (id, receipt_id, amount, due_date, status)
+	•	supplier_performance (supplier_id, on_time_pct, avg_lead_time, quality_score)
+
+Pages / Routes:
+	•	/purchases/requisitions, /purchases/orders, /purchases/receipts, /purchases/bills, /purchases/suppliers
+
+API Endpoints:
+	•	Requisition create: POST /api/purchases/requisitions
+	•	PO create: POST /api/purchases/orders
+	•	Receipt: POST /api/purchases/receipts, PUT /api/purchases/receipts/:id/validate
+	•	Bill: POST /api/purchases/bills, PUT /api/purchases/bills/:id/pay
+
+Features:
+	•	Approval workflows for requisitions and POs
+	•	Three-way matching (PO, receipt, invoice)
+	•	Supplier RFQ and bidding comparison
+	•	Automated PO creation from inventory replenishment rules
+	•	Supplier KPIs and spend analysis
+
+Permissions:
+	•	procurement_officer, purchaser_manager, finance_approver
+
+Jobs / Events:
+	•	Scheduled job generating PO based on replenishment rules
+	•	Supplier review reminders, contract expiry alerts
+
+Implementation Notes:
+	•	Enforce matching rules strictly; flag mismatches for review
+	•	Link purchase lines to cost accounting automatically
+
+⸻
+
+6 — Accounting & Finance
+
+Description: General Ledger, Accounts Payable & Receivable, bank reconciliation, multi-currency, taxes.
+
+Tables:
+	•	accounts (id, tenant_id, code, name, type (asset/liability/equity/revenue/expense), parent_id)
+	•	journals (id, tenant_id, name, type (sale/purchase/bank/cash), default_account_id)
+	•	journal_entries (id, tenant_id, journal_id, date, ref, description)
+	•	journal_lines (id, entry_id, account_id, debit, credit, partner_id, product_line_ref)
+	•	invoices (id, type (out_invoice/in_invoice), partner_id, date_invoice, due_date, total, status)
+	•	payments (id, invoice_id, amount, method, date, reference)
+	•	bank_statements (id, account_id, date, statement_lines JSON)
+	•	taxes (id, tenant_id, name, rate, account_id)
+	•	asset_register (id, tenant_id, asset_name, acquisition_date, cost, depreciation_method, useful_life)
+	•	budgets (id, tenant_id, account_id, period_start, period_end, amount)
+
+Pages / Routes:
+	•	/accounting/dashboard, /accounting/invoices, /accounting/journal-entries, /accounting/reports
+
+API Endpoints:
+	•	Invoice create from sales order: POST /api/accounting/invoices/from-order
+	•	Bill create from PO: POST /api/accounting/invoices/from-po
+	•	Post journal entry: POST /api/accounting/journal-entries
+	•	Bank reconciliation: POST /api/accounting/bank-statements/import, POST /api/accounting/bank-statements/:id/match
+
+Features:
+	•	Automated GL entries from other modules
+	•	Multi-currency handling & exchange gains/losses
+	•	Tax engine (inclusive/exclusive)
+	•	Bank reconciliation via file import (CSV, OFX)
+	•	Financial statements: P&L, Balance Sheet, Cash Flow
+	•	Period closing & locking
+
+Permissions:
+	•	accountant, finance_manager, auditor
+
+Jobs / Events:
+	•	Daily currency rate update
+	•	Recurring invoices & payment reminders
+	•	Aging reports generation
+
+Implementation Notes:
+	•	Double-entry accounting: sum(debit)=sum(credit) enforce integrity
+	•	Provide ability to reverse/adjust entries with audit logging
+	•	Consider performance of aggregation queries (materialized views)
+
+⸻
+
+7 — HR & Payroll
+
+Description: Employees, time & attendance, leave management, payroll processing, performance reviews.
+
+Tables:
+	•	employees (id, user_id, tenant_id, name, national_id, dob, hire_date, termination_date, job_title, department_id, contract_details JSON, salary_structure_id)
+	•	departments (id, tenant_id, name, parent_department_id)
+	•	attendances (id, employee_id, date, check_in, check_out, hours_worked)
+	•	leaves (id, employee_id, leave_type, start_date, end_date, status, approved_by)
+	•	salary_structures (id, tenant_id, components JSON (allowances, deductions), tax_rules JSON)
+	•	payroll_runs (id, tenant_id, period_from, period_to, status, generated_by, totals JSON)
+	•	pay_slips (id, payroll_run_id, employee_id, earnings JSON, deductions JSON, net_pay)
+
+Pages / Routes:
+	•	/hr/employees, /hr/attendance, /hr/leaves, /hr/payrolls, /hr/performance
+
+API Endpoints:
+	•	Leave request: POST /api/hr/leaves, PUT /api/hr/leaves/:id/approve
+	•	Attendance import/update: POST /api/hr/attendances
+	•	Payroll run generate: POST /api/hr/payrolls/run, GET /api/hr/payrolls/:id/payslips
+
+Features:
+	•	Employee record management
+	•	Time & attendance, check-in/check-out, hours worked
+	•	Leave workflows with approval
+	•	Salary rules engine supporting allowances, deductions, tax, social contributions
+	•	Payslip generation (PDF) and bank transfer file export
+	•	Performance reviews & training records
+
+Permissions:
+	•	hr_manager, payroll_officer, hr_viewer
+
+Jobs / Events:
+	•	Scheduled payroll runs (e.g., monthly)
+	•	Leave accrual processing
+	•	Contract expiry alerts
+
+Implementation Notes:
+	•	Sensitive data handling: encrypt personal data and restrict access
+	•	Local compliance: tax rules should be configurable per country
+	•	Provide audit trail for payroll changes and leave approvals
+
+⸻
+
+8 — Projects & Timesheets
+
+Description: Projects, tasks, time tracking, billing by hours or fixed price, profitability analysis.
+
+Tables:
+	•	projects (id, tenant_id, name, customer_id, start_date, end_date, status, budget)
+	•	tasks (id, project_id, title, assigned_to, status, priority, estimate_hours, due_date)
+	•	timesheets (id, task_id, employee_id, date, hours, description)
+	•	project_invoices (id, project_id, invoice_type (fixed/time_material), total, status)
+
+Pages / Routes:
+	•	/projects, /projects/:id, /projects/:id/tasks, /timesheets
+
+API Endpoints:
+	•	Project CRUD: POST /api/projects, PUT /api/projects/:id
+	•	Task CRUD: POST /api/tasks, PUT /api/tasks/:id
+	•	Timesheet entry: POST /api/timesheets, GET /api/timesheets?employee_id=&project_id=
+	•	Invoice creation: POST /api/projects/:id/invoices
+
+Features:
+	•	Kanban and Gantt views for projects
+	•	Time tracking per task, employee
+	•	Budget vs actual hours/cost
+	•	Billable vs non-billable time distinction
+	•	Project reports (profitability, utilisation, workload)
+
+Permissions:
+	•	project_manager, team_member, client_viewer
+
+Implementation Notes:
+	•	Timesheet approval before invoicing
+	•	Integration with accounting for billing entries
+
+⸻
+
+9 — Manufacturing / MRP
+
+Description: Bill of Materials (BOM), work orders, routing, production costing, integration with inventory.
+
+Tables:
+	•	boms (id, tenant_id, product_variant_id, components JSON (variant_id, qty), routing JSON)
+	•	work_orders (id, bom_id, qty_to_produce, qty_produced, status, start_date, end_date)
+	•	work_centers (id, tenant_id, name, capacity_hours_per_day, cost_per_hour)
+	•	mrp_moves (id, work_order_id, product_variant_id, qty, move_type (consume/produce), date)
+
+Pages / Routes:
+	•	/manufacturing/boms, /manufacturing/work-orders, /manufacturing/planning
+
+API Endpoints:
+	•	BOM CRUD: POST /api/manufacturing/boms
+	•	Work Order: POST /api/manufacturing/work-orders, PUT /api/manufacturing/work-orders/:id/start, /complete
+	•	Move: POST /api/manufacturing/mrp-moves
+
+Features:
+	•	Make-to-stock / make-to-order production modes
+	•	Material reservation & consumption
+	•	Work center capacity planning & costing
+	•	Scrap and rework handling
+	•	Integration with inventory and accounting for consumption & finished goods
+
+Permissions:
+	•	mrp_manager, shop_floor_operator
+
+Implementation Notes:
+	•	Ensure reservation of raw materials reduces stock levels when work order is released
+	•	Track production cost by work order
+
+⸻
+
+10 — Quality Control
+
+Description: Quality checks, inspection points, non-conformance tracking.
+
+Tables:
+	•	qc_checks (id, tenant_id, product_variant_id, check_type (incoming/production/outgoing), criteria JSON, frequency, next_due_date)
+	•	qc_reports (id, check_id, work_order_id (optional), result (PASS/FAIL), remarks, recorded_by, recorded_at)
+	•	non_conformances (id, report_id, action_taken, root_cause, status)
+
+Pages / Routes:
+	•	/quality/checks, /quality/reports, /quality/non-conformances
+
+API Endpoints:
+	•	POST /api/quality/checks, POST /api/quality/reports, PUT /api/quality/non-conformances/:id/action
+
+Features:
+	•	Attach QC to receptions, work orders, finished product
+	•	Automatic hold of product variants when QC fails
+	•	Non-conformance workflow: investigation → corrective action → closure
+	•	Reporting of quality KPIs (fail rate, scrap rate)
+
+Permissions:
+	•	qc_manager, qc_inspector
+
+Implementation Notes:
+	•	Link QC reports to inventory moves or production orders for traceability
+	•	Provide batch/serial level QC when required
+
+⸻
+
+11 — Helpdesk / Support
+
+Description: Support tickets, knowledge base, SLA tracking.
+
+Tables:
+	•	tickets (id, tenant_id, subject, description, status, priority, assigned_to, customer_id, created_at)
+	•	ticket_messages (id, ticket_id, author_id, body, created_at)
+	•	sla_policies (id, tenant_id, name, response_time_hours, resolution_time_hours)
+	•	ticket_attachments (id, ticket_id, url, created_at)
+
+Pages / Routes:
+	•	/support/tickets, /support/tickets/:id, /support/kb
+
+API Endpoints:
+	•	POST /api/support/tickets, GET /api/support/tickets/:id/messages, PUT /api/support/tickets/:id/assign
+	•	GET /api/support/kb
+
+Features:
+	•	Ticket creation (email → ticket), assignment rules, SLA monitoring
+	•	Knowledge base with search & categorisation
+	•	Customer portal for external access
+	•	Canned responses & escalation workflows
+
+Permissions:
+	•	support_agent, support_manager, support_viewer
+
+Implementation Notes:
+	•	Email gateway integration (incoming/outgoing)
+	•	SLA breach notifications and escalations
+
+⸻
+
+12 — E-Commerce & POS
+
+Description: Web storefront and POS terminal integrated with catalog, inventory and payments.
+
+Tables:
+	•	web_products (id, product_variant_id, published, seo_title, seo_description, web_price)
+	•	web_orders (id, tenant_id, customer_id, order_date, status, total_amount, payment_status)
+	•	pos_sessions (id, tenant_id, user_id, start_time, end_time, cash_drawer_open)
+	•	pos_orders (id, pos_session_id, order_date, total, status, sync_status)
+	•	payments (utilize shared payments table or specific to web/pos)
+
+Pages / Routes:
+	•	/webshop/* (public site)
+	•	/pos/terminal (internal POS interface)
+	•	/pos/sessions, /pos/sales
+
+API Endpoints:
+	•	Public product API: GET /api/web/products
+	•	Order creation: POST /api/web/orders, POST /api/pos/orders
+	•	Payment gateway callbacks: POST /api/web/payments/callback
+
+Features:
+	•	Multi-channel sync (web + POS + marketplace)
+	•	Real-time inventory deduction on order commit
+	•	Payments (card, gateway, cash)
+	•	Offline POS mode with sync on reconnect
+	•	Web storefront CMS capabilities (pages, blogs, promotions)
+
+Permissions:
+	•	pos_operator, ecommerce_manager
+
+Implementation Notes:
+	•	Use eventual consistency for POS offline sync; handle conflicts when reconnecting
+	•	Ensure web product API filters by published and tenant_id
+
+⸻
+
+13 — Reporting & Business Intelligence
+
+Description: Dashboards, custom reports, scheduled exports, data analytics.
+
+Tables:
+	•	reports (id, tenant_id, name, query_definition JSON, schedule, recipients JSON)
+	•	report_runs (id, report_id, run_at, status, result_url)
+
+Pages / Routes:
+	•	/reports/dashboard, /reports/custom, /reports/schedules
+
+API Endpoints:
+	•	POST /api/reports/create, GET /api/reports/:id/run, PUT /api/reports/:id/schedule
+
+Features:
+	•	Pre-built dashboards (sales, inventory, finance, HR)
+	•	Custom report builder (select models, filters, group by, aggregates)
+	•	Export to XLSX/PDF, schedule for email delivery
+	•	Role-based access to reports
+
+Permissions:
+	•	report_viewer, report_creator, report_admin
+
+Implementation Notes:
+	•	Use data warehouse or materialized views for heavy aggregations
+	•	Cache report results, use job queue for scheduled runs
+
+⸻
+
+14 — Document Management (DMS)
+
+Description: Document storage, versioning, attachments to records, search.
+
+Tables:
+	•	documents (id, tenant_id, owner_id, entity_type, entity_id, file_url, metadata JSON, tags JSON, version_number)
+	•	document_folders (id, tenant_id, name, parent_folder_id, owner_id)
+
+Pages / Routes:
+	•	/documents, /documents/:id, /documents/folders
+
+API Endpoints:
+	•	POST /api/documents/upload, GET /api/documents/:id/download, PUT /api/documents/:id/version
+
+Features:
+	•	Attach documents to any entity (products, orders, contracts)
+	•	Version control, document folders, permissions per folder/document
+	•	Full-text search and tag filtering
+	•	Preview of PDF/image documents
+
+Permissions:
+	•	document_upload, document_view, document_delete
+
+Implementation Notes:
+	•	Use storage service (S3/DigitalOcean) for file hosting
+	•	Handle large file uploads (chunking) and virus scanning if required
+
+⸻
+
+15 — Integrations & Connectors
+
+Description: External systems integrations: payment gateways, shipping carriers, marketplaces, ERPs.
+
+Tables:
+	•	integration_connections (id, tenant_id, type, config JSON, status)
+	•	webhook_subscriptions (id, tenant_id, url, events JSON, secret, status)
+
+Pages / Routes:
+	•	/integrations/connections, /integrations/webhooks
+
+API Endpoints:
+	•	POST /api/integrations/connections, POST /api/integrations/webhooks/subscribe, POST /api/integrations/webhooks/publish
+
+Features:
+	•	Pre-built connectors (Stripe, PayPal, Shopify, Amazon, eBay)
+	•	Webhook management with retry logic
+	•	Data mapping engine (source fields → internal fields)
+	•	Scheduled sync jobs (daily batch import/export)
+
+Permissions:
+	•	integration_admin, integration_user
+
+Implementation Notes:
+	•	Provide UI for OAuth flows for connector setup
+	•	Log all integration events and statuses in audit logs
+
+⸻
+
+16 — Notifications & Communications
+
+Description: In-app notifications, email, SMS, push notifications.
+
+Tables:
+	•	notifications (id, tenant_id, user_id, type, payload JSON, read_at, created_at)
+	•	notification_templates (id, tenant_id, key, subject, body_html, body_text)
+
+Pages / Routes:
+	•	/notifications/inbox, /notifications/settings
+
+API Endpoints:
+	•	POST /api/notifications/send, GET /api/notifications/unread, PUT /api/notifications/:id/read
+
+Features:
+	•	Template engine with placeholders, channel switching (email/SMS/push)
+	•	Notification preferences per user
+	•	Scheduled notifications, batch sends, retry logic
+
+Permissions:
+	•	notification_send, notification_manage
+
+Implementation Notes:
+	•	Use queue for sending notifications asynchronously
+	•	Support unsubscribe/unsubscribe per channel for compliance (e.g., GDPR)
+
+⸻
+
+17 — Data Import/Export & Migration
+
+Description: Robust support for CSV/XLSX import/export, dry run, mapping, templates, background jobs.
+
+Tables:
+	•	import_jobs (id, tenant_id, user_id, model_name, filename, status (pending/processing/done/failed), total_rows, success_count, error_count, created_at, finished_at, result_url)
+	•	import_job_rows (id, job_id, row_number, raw_data JSON, status, error_message)
+	•	export_jobs (id, tenant_id, user_id, model_name, status, file_url, created_at)
+	•	export_job_rows (optional for detailed logs)
+
+Pages / Routes:
+	•	/data/import, /data/export, /data/templates
+
+API Endpoints:
+	•	POST /api/data/import/init, POST /api/data/import/:job_id/confirm, GET /api/data/import/:job_id/status, GET /api/data/import/:job_id/report
+	•	POST /api/data/export/init, GET /api/data/export/:job_id/status, GET /api/data/export/:job_id/download
+
+Features:
+	•	Column mapping UI (drag & drop)
+	•	Saved templates for import/export
+	•	Dry-run mode showing proposed creates/updates & validation errors
+	•	Background job queue with progress UI
+	•	Row-level error report download (CSV)
+	•	Undo support or snapshot before big imports
+
+Permissions:
+	•	data_import, data_export, data_migration_admin
+
+Implementation Notes:
+	•	Validate and sanitize all input rows (types, duplicates, business rules)
+	•	For large imports (>100K rows) chunking & memory-efficient processing
+	•	Audit logs for import actions
+
+⸻
+
+18 — Security, Backup & Compliance
+
+Description: Security controls, encryption, backups, GDPR compliance, data retention.
+
+Tables / Settings:
+	•	data_retention_policies (id, tenant_id, model_name, retention_days)
+	•	event_logs (beyond audit_logs – capture login failures, permission changes)
+
+Pages / Routes:
+	•	/security/settings, /backup-history
+
+Features:
+	•	Field-level encryption for PII
+	•	Data export/erasure workflows (right to be forgotten)
+	•	Scheduled full & incremental backups; disaster recovery process
+	•	Role-based access controls + session management
+	•	Penetration test & vulnerability scan logs
+
+Permissions:
+	•	security_admin, backup_operator
+
+Implementation Notes:
+	•	Use encryption at rest and in transit
+	•	Retention policy enforcement (automatic purging)
+	•	Zero trust mindset: least privilege principle for services and users
+
+⸻
+
+19 — Billing & Subscriptions (SaaS)
+
+Description: Subscription plans, usage metering, tenant billing, invoices for SaaS service.
+
+Tables:
+	•	plans (id, name, features JSON, price_per_month, price_per_year)
+	•	subscriptions (id, tenant_id, plan_id, status (active/past_due/cancelled), start_date, end_date)
+	•	tenant_usage_metrics (tenant_id, metric_name, value, period_start, period_end)
+	•	tenant_invoices (id, tenant_id, period_start, period_end, total, paid_status)
+
+Pages / Routes:
+	•	/billing/plans, /billing/subscriptions, /billing/invoices
+
+API Endpoints:
+	•	POST /api/billing/subscribe, POST /api/billing/change-plan, GET /api/billing/invoices
+
+Features:
+	•	Metered billing (usage-based pricing)
+	•	Promotion codes, discounts, trial periods
+	•	Invoice generation (PDF) for tenants
+	•	Payment gateway integration (Stripe/PayPal)
+	•	Usage dashboard for tenant
+
+Permissions:
+	•	billing_view, billing_admin
+
+Implementation Notes:
+	•	Use subscription status for feature gating in tenant context
+	•	Ensure invoice generation aligns with local tax rules where applicable
+
+⸻
+
+20 — Studio / Customization
+
+Description: Enable users/tenants to add custom fields, define workflows, page builder.
+
+Tables:
+	•	custom_fields (id, tenant_id, entity_name, field_name, field_type, validation_rules JSON, created_by)
+	•	workflow_definitions (id, tenant_id, name, trigger_event, actions JSON)
+	•	page_layouts (id, tenant_id, entity_name, layout_definition JSON)
+
+Pages / Routes:
+	•	/studio/custom-fields, /studio/workflows, /studio/page-builder
+
+API Endpoints:
+	•	POST /api/studio/custom-fields, POST /api/studio/workflows, PUT /api/studio/page-layouts/:entity
+
+Features:
+	•	Tenant-specific custom fields (forms, tables)
+	•	Workflow builder (IF event → THEN actions)
+	•	Page builder/drag-and-drop UI for forms & lists
+	•	Export/import customization packages
+
+Permissions:
+	•	studio_admin, studio_user
+
+Implementation Notes:
+	•	Custom fields should integrate with search/filter UI generically
+	•	Workflow engine must support asynchronous tasks and error retries
+	•	Custom UI definitions stored as JSON and rendered dynamically
+
+⸻
+
+Implementation Priorities
+	•	Phase 1 (MVP): Core, Products, Inventory, Sales, Purchases, Basic Accounting, Import/Export
+	•	Phase 2: HR, Projects, Manufacturing, E-Commerce/POS, Reporting & BI
+	•	Phase 3: Quality, Helpdesk, Billing, Studio, Advanced Integrations, Security & Compliance enhancements
