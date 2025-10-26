@@ -1,0 +1,702 @@
+Complete, practical & creative module-level design — ready for a real SaaS build
+
+Below is a fully fleshed, engineer-ready description for each module you need to implement a production-grade ERP (Next.js + Node/Prisma/Postgres style).
+For each module I provide:
+	•	Purpose / quick summary
+	•	Data models (table name + core fields & types) — suitable for direct translation into Prisma models
+	•	Pages / routes (what to build in Next.js)
+	•	Core features (must-have)
+	•	Creative / advanced features (AI, automation, UX innovations — differentiators)
+	•	UX flow notes (practical flows you must implement)
+	•	Integrations / events / background jobs
+	•	Permissions (roles / capabilities)
+	•	Key metrics / KPIs to track
+	•	Implementation tips / pitfalls
+
+⸻
+
+1. Core (Tenancy, Users, RBAC, Audit, Settings)
+
+Purpose: Tenant isolation, auth, roles, permissions, global settings, audit trail.
+
+Models (core fields — types in parentheses):
+	•	Tenant — id: UUID, name: string, subdomain: string, plan: enum, status: string, settings: json, createdAt: datetime
+	•	User — id: UUID, tenantId: UUID, email: string, name: string, passwordHash: string, isActive: bool, locale: string, timezone: string, createdAt: datetime
+	•	Role — id, tenantId, name, isDefault: bool
+	•	Permission — id, key: string, description: string
+	•	UserRole — userId, roleId
+	•	AuditLog — id, tenantId, userId, entity, entityId, action, diff: json, ip, userAgent, createdAt
+	•	ApiKey — id, tenantId, key, scopes: string[], expiresAt
+
+Pages / Routes:
+	•	Admin: /admin/tenants, /admin/tenants/[id]
+	•	Users: /users, /users/new, /users/[id]
+	•	Roles & permissions: /settings/roles, /settings/permissions
+	•	Global settings: /settings/system
+
+Core features:
+	•	Subdomain-based tenant resolution + tenant context middleware
+	•	Authentication: email/password, OAuth, 2FA (optional)
+	•	Role-based access control (RBAC) and resource-level checks
+	•	Audit log capture on all writes (who/when/what changed)
+	•	API keys with scopes for integrations
+
+Creative / advanced ideas:
+	•	Tenant onboarding wizard with sample data population (demo mode) and role templates.
+	•	Permission visualizer: UI graph showing which roles grant access to which routes/resources.
+	•	Self-service API key manager with usage charts and rate-limits per key.
+	•	Anomaly detection on audit logs (small AI model or rules engine) to flag unusual admin actions.
+
+UX flows:
+	•	Sign up → subdomain creation → quick setup wizard (company info, currency, default warehouses, sample products).
+	•	Invite user flow with role templates (e.g., “Inventory Clerk” pre-filled permissions).
+
+Background jobs & events:
+	•	Clean-up job for inactive tenants/data retention.
+	•	Webhook dispatch queue with retry and DLQ (dead-letter queue).
+
+Permissions:
+	•	tenant_admin, user_manage, role_manage, api_key_manage, audit_read
+
+KPIs:
+	•	Tenant activation conversion rate
+	•	Daily active users per tenant
+	•	Number of roles & custom permissions used
+
+Implementation tips:
+	•	Always inject tenantId server-side — never trust client input.
+	•	Index (tenantId, id) and enforce unique constraints on (tenantId, subdomain).
+	•	Keep Audit logs append-only and consider pruning policies.
+
+⸻
+
+2. Products & Catalog
+
+Purpose: Flexible product catalog with variants, attributes, multi-uom, supplier links, images and lifecycle.
+
+Models:
+	•	Product — id, tenantId, name, description, productType ("stockable"|... ), status, createdAt
+	•	ProductVariant — id, productId, sku, barcode, attributes: json, active
+	•	ProductAttribute — id, name
+	•	ProductAttributeValue — id, attributeId, value
+	•	ProductImage — id, productVariantId, url, alt, order
+	•	ProductSupplier — productVariantId, supplierId, supplierSku, cost, leadTimeDays
+	•	UoM — id, name, ratioToBase
+
+Pages / Routes:
+	•	/inventory/products (list & filters)
+	•	/inventory/products/new, /inventory/products/[id]/edit
+	•	/inventory/products/[id]/variants
+	•	Global quick-add component to use across app
+
+Core features:
+	•	Manual add/edit product + variants
+	•	Bulk import (CSV/XLSX) with column mapping and dry-run
+	•	Quick-add modal + barcode scanner support
+	•	Product lifecycle states (draft/published/archived)
+	•	Supplier per-variant pricing & lead time
+
+Creative / advanced features:
+	•	Smart attribute generator: when you upload several SKUs, the system suggests attributes (color/size) by clustering text columns.
+	•	Auto-suggest SKU & barcode based on rules and conflict detection.
+	•	Image intelligence: auto-tag images (color, shape), auto-generate thumbnails & search by image similarity.
+	•	Marketplace sync adapters: push/pull product updates to/from Shopify, Amazon with delta sync.
+
+UX flows:
+	•	Bulk import wizard: upload → auto-detect columns → map → preview → dry-run → confirm → background job with real-time progress and error rows export.
+	•	Quick-create on scan: unknown barcode → present two options: create minimal product now or queue for later.
+
+Integrations & jobs:
+	•	Background image processing, CDN upload.
+	•	Import jobs (BullMQ) with row-level error logs.
+	•	Webhooks for product updates (to storefront / marketplaces).
+
+Permissions:
+	•	product_create, product_edit, product_import, product_publish
+
+KPIs:
+	•	SKUs per tenant, average catalog completeness (images/prices/attributes)
+	•	Import success rate, average import errors per 1000 rows
+
+Implementation tips:
+	•	Use JSONB for attributes initially, but provide a derived table for common attributes for fast filtering.
+	•	Enforce unique (tenantId, sku) and (tenantId, barcode) with conflict strategies.
+
+⸻
+
+3. Inventory & Warehouse
+
+Purpose: Real-time stock control across warehouses & locations, transfers, reservations, stock-takes, replenishment rules.
+
+Models:
+	•	Warehouse — id, tenantId, name, address, code
+	•	Location — id, warehouseId, name, locationType, parentId
+	•	StockLevel — productVariantId, locationId, qtyAvailable, qtyReserved, lastUpdated
+	•	StockMove — id, tenantId, productVariantId, fromLocationId, toLocationId, qty, status, reference, createdAt
+	•	StockTake — id, tenantId, name, warehouseId, scheduledAt, status, createdBy
+	•	StockTakeLine — stockTakeId, productVariantId, countedQty, expectedQty, discrepancy
+	•	ReplenishmentRule — productVariantId, locationId, minQty, maxQty, reorderQty, procurementMethod
+
+Pages / Routes:
+	•	/inventory/dashboard
+	•	/inventory/warehouses, /inventory/locations
+	•	/inventory/transfers/new, /inventory/transfers
+	•	/inventory/stock-takes, /inventory/stock-takes/[id] (mobile scanner UI)
+	•	/inventory/replenishment
+
+Core features:
+	•	Transfers (inbound/outbound/internal) with approvals
+	•	Reservations for sales orders & allocations
+	•	Realtime stock queries + per-warehouse breakdown
+	•	Stock-take flow with scanner-friendly UI and reconciliation
+	•	Min-max replenishment rules that create POs or MOs
+
+Creative / advanced features:
+	•	Mobile-first scanner app with offline mode — sync when online, smart conflict resolution on reconnect.
+	•	Auto-priority replenishment using sales velocity forecasts (AI) to weigh which SKUs to reorder first.
+	•	Heatmap of SKU movement in warehouse for optimized picking routes (visualization).
+	•	Automated put-away suggestions using historic inbound patterns and available capacity.
+	•	Virtual reservations for prospective orders (hold windows) with expiration.
+
+UX flows:
+	•	Transfer creation → picklist → pick confirmation (scanner) → pack → ship (validate)
+	•	Stock-take: create session → scan barcodes (fast-add if missing) → validate → generate adjustment moves
+
+Integrations & jobs:
+	•	Replenishment job (scheduled) → create POs or raise alerts
+	•	Reservation release job for expired reservations
+	•	Event stream (Kafka / pubsub) for high-volume warehouses
+
+Permissions:
+	•	warehouse_manager, inventory_clerk, stock_taker, replenishment_admin
+
+KPIs:
+	•	Stock accuracy %, out-of-stock incidents, average days of inventory (DOI)
+	•	Picking error rate, average fulfillment lead time
+
+Implementation tips:
+	•	Keep StockMove and StockLevel updates within DB transactions.
+	•	For very high volume, consider per-location locking or moving to an event-sourced model.
+
+⸻
+
+4. Sales & CRM
+
+Purpose: Manage leads → opportunities → quotes → orders → invoices; pipeline and forecasting.
+
+Models:
+	•	Lead, Contact, Opportunity, Pipeline (stages JSON)
+	•	Quotation + QuotationLine
+	•	SalesOrder + SalesOrderLine
+	•	Activity (tasks/calls/emails), Note
+
+Pages / Routes:
+	•	/crm/leads, /crm/opportunities, /crm/pipeline (kanban)
+	•	/sales/quotations/new, /sales/quotes, /sales/orders
+
+Core features:
+	•	Lead capture forms & email parsing (email-to-lead)
+	•	Kanban pipeline with drag-and-drop stages
+	•	Quote generation (PDF) + e-signature / customer acceptance link
+	•	Pricelist engine: customer-specific prices, tiered discounts, promo codes
+	•	Auto-reservation on order confirmation
+
+Creative / advanced features:
+	•	AI-powered deal scoring: predicts win probability based on historical deals, customer signals, interaction frequency.
+	•	Smart follow-up assistant: suggests next best action (email/call/time) and creates templated emails personalized with merge fields.
+	•	Revenue recognition automation integrated with accounting for complex contract terms.
+	•	Customer 360 page: combine orders, tickets, payments, support history, lifetime value (LTV), sentiment analysis from communications.
+	•	Conversational sales bot on webstore that qualifies leads and books demo slots.
+
+UX flows:
+	•	Lead intake → automatic enrichment (company, LinkedIn, domain data) → assignment → sequence of activities → convert to opportunity → create quotation → collect e-acceptance → confirm order
+
+Integrations & jobs:
+	•	Email & calendar integration (SMTP/IMAP, Google Calendar) for activity sync
+	•	Background enrichment jobs (company info, open-data)
+	•	Payment gateway callbacks to update order/invoice status
+
+Permissions:
+	•	sales_rep, sales_manager, crm_admin
+
+KPIs:
+	•	Conversion rate, average deal size, sales velocity, pipeline coverage (weighted)
+
+Implementation tips:
+	•	Store raw email messages and parsed metadata for audit and AI training.
+	•	Use idempotency keys on external webhook handling (payments).
+
+⸻
+
+5. Purchasing & Procurement
+
+Purpose: Manage supplier chain: requisitions, RFQs, POs, receipts, vendor bills and supplier performance.
+
+Models:
+	•	Supplier, PurchaseRequisition, PurchaseOrder, PurchaseOrderLine, Receipt, VendorBill, SupplierPerformance
+
+Pages / Routes:
+	•	/purchases/requisitions, /purchases/orders, /purchases/receipts, /purchases/bills
+
+Core features:
+	•	Requisition approval workflows (multi-step)
+	•	RFQ & supplier comparison matrix
+	•	Three-way matching (PO, receipt, invoice)
+	•	Auto-create PO from replenishment rules
+
+Creative / advanced features:
+	•	Supplier bidding portal: suppliers respond to RFQs via a lightweight portal; system compares and scores proposals.
+	•	Spend analytics + anomaly detection to flag irregular pricing changes or duplicate invoices (fraud detection).
+	•	Dynamic sourcing engine: uses lead time, cost, supplier reliability and days-of-inventory to choose supplier per PO line.
+	•	Auto-merge shipments for cross-supplier consolidation to reduce freight.
+
+UX flows:
+	•	Requisition submit → approval chain → convert to PO → send PO via email/API → receipt via scanning → auto-generate vendor bill
+
+Integrations & jobs:
+	•	EDI/FTP connectors for supplier catalogs, ASN (advanced shipping notice)
+	•	Scheduled supplier performance calculation jobs
+
+Permissions:
+	•	procurement_officer, purchaser_manager, procurement_admin
+
+KPIs:
+	•	Supplier on-time rate, PO cycle time, PO accuracy, cost savings from bidding
+
+Implementation tips:
+	•	Lock PO lines once sent until supplier acknowledges or cancelation flow triggered.
+	•	Keep a clear audit trail for approvals and changes.
+
+⸻
+
+6. Accounting & Finance
+
+Purpose: Full double-entry accounting, invoicing, payments, bank reconciliation, tax and financial reporting.
+
+Models:
+	•	Account, Journal, JournalEntry, JournalLine, Invoice, Payment, BankStatement, Tax, Asset, Budget
+
+Pages / Routes:
+	•	/accounting/chart-of-accounts, /accounting/invoices, /accounting/journal-entries, /accounting/reports
+
+Core features:
+	•	Double-entry engine: every transaction posts balanced journal lines
+	•	Recurring invoices, bank statement import / auto-reconcile rules
+	•	Multi-currency conversions with realized/unrealized gain/loss
+	•	Tax engine with multi-jurisdiction rules
+
+Creative / advanced features:
+	•	Auto-categorization AI: suggests GL account for uncategorized transactions based on description, amount, vendor.
+	•	Cashflow forecasting using AR/AP aging, expected receipts, and payments predictions (AI).
+	•	Automated compliance packs for common tax filings (generate drafts of VAT reports).
+	•	Approval flows for large journal entries with digital signatures.
+
+UX flows:
+	•	Sales order → invoice generation (linking lines to journal entries) → payment reconciliation → update cash book
+	•	Bank import → auto-match to payments/invoices → manual review of unmatched lines
+
+Integrations & jobs:
+	•	Payment gateway integration (Stripe, PayPal) webhooks → auto-create payment records
+	•	Scheduled currency rate updates
+	•	Aging & forecast report generator jobs
+
+Permissions:
+	•	accountant, finance_manager, auditor (read-only full)
+
+KPIs:
+	•	Days Sales Outstanding (DSO), Days Payable Outstanding (DPO), cash runway, EBITDA
+
+Implementation tips:
+	•	Enforce sum(debit) == sum(credit) at DB/application level before posting.
+	•	Keep reverse/void flows and audit trails for all posted entries.
+
+⸻
+
+7. HR & Payroll
+
+Purpose: Employee data, attendance, leave, payroll, contracts and performance.
+
+Models:
+	•	Employee, Department, Attendance, Leave, SalaryStructure, PayrollRun, Payslip
+
+Pages / Routes:
+	•	/hr/employees, /hr/attendance, /hr/leaves, /hr/payrolls
+
+Core features:
+	•	Employee profile and contract management
+	•	Leave requests and approvals
+	•	Attendance capture / timesheets
+	•	Payroll runs with payslip generation and bank file export (SEPA/CSV)
+
+Creative / advanced features:
+	•	Compensation benchmarking: integrate market salary data to suggest ranges.
+	•	Predictive attrition model: flags employees at risk of leaving based on engagement/absence patterns.
+	•	Auto-schedule optimizer: creates shift schedules that minimize overtime and meet coverage constraints.
+	•	Expense & mileage capture via mobile with OCR to extract amounts and categories.
+
+UX flows:
+	•	Employee onboarding wizard (documents upload, tax forms, bank details)
+	•	Leave application → manager approval → balances updated
+	•	Payroll run preview → adjustments → batch confirm → pay/export
+
+Integrations & jobs:
+	•	Bank payroll file generator job
+	•	Tax & social contribution calculation periodically updated
+	•	HRIS sync with identity providers (SSO)
+
+Permissions:
+	•	hr_manager, payroll_officer, hr_viewer
+
+KPIs:
+	•	Payroll accuracy rate, average time to hire, turnover rate, overtime hours
+
+Implementation tips:
+	•	Handle PII carefully (encryption at rest + limited access).
+	•	Make payroll rules pluggable per country.
+
+⸻
+
+8. Projects & Timesheets
+
+Purpose: Plan & execute projects, track time, billable hours and profitability.
+
+Models:
+	•	Project, Task, Timesheet, ProjectInvoice
+
+Pages / Routes:
+	•	/projects, /projects/[id], /tasks, /timesheets
+
+Core features:
+	•	Task boards (kanban), Gantt charts, time entry & approvals
+	•	Bill clients by hours or fixed-price milestones
+
+Creative / advanced features:
+	•	Auto-time suggestions: suggest timesheet entries based on calendar events, emails, or activity (AI).
+	•	Project profitability alerting: real-time P&L for each project and alert for overruns.
+	•	Resource leveling optimizer: suggests reassignments to meet deadlines based on capacity.
+
+Integrations & jobs:
+	•	Calendar & communication integrations for auto-suggestions
+	•	Timesheet approval job for managers
+
+Permissions:
+	•	project_manager, team_member, client_viewer
+
+KPIs:
+	•	Billable utilization, project margin, on-time delivery rate
+
+Implementation tips:
+	•	Enforce timesheet locking on payroll/invoice cutoffs.
+	•	Provide timesheet bulk edit and CSV import/export.
+
+⸻
+
+9. Manufacturing (MRP) & Quality
+
+Purpose: BOMs, work orders, routings, capacity planning, QC & traceability.
+
+Models:
+	•	BOM, WorkOrder, WorkCenter, MRPMove, QCCheck, QCReport, NonConformance
+
+Pages / Routes:
+	•	/manufacturing/boms, /manufacturing/work-orders, /manufacturing/planning, /quality/checks
+
+Core features:
+	•	Multi-level BOM, work orders, routing & capacity
+	•	Consumption & production posting to inventory & accounting
+	•	QC checks attached to receptions/work orders
+
+Creative / advanced features:
+	•	Digital twin / simulation mode: simulate a production plan to predict bottlenecks and cost before committing.
+	•	Computer Vision QC: integrate camera-based visual inspection for specific product classes.
+	•	Predictive maintenance for work centers (maintenance job scheduling by usage).
+
+Integrations & jobs:
+	•	MES/Shop-floor devices integration (IoT) for real-time status
+	•	Maintenance scheduler jobs
+
+Permissions:
+	•	mrp_manager, shop_floor_operator, qc_inspector
+
+KPIs:
+	•	Overall equipment effectiveness (OEE), production yield, scrap rate
+
+Implementation tips:
+	•	Keep accurate traceability: link lot/serial to work orders and QC reports.
+	•	Costing models for standard vs actual costing.
+
+⸻
+
+10. E-Commerce & POS
+
+Purpose: Public storefront & in-store POS, multi-channel order capture synced with catalog & inventory.
+
+Models:
+	•	WebProduct (publishing fields), WebOrder, POSSession, POSOrder, Payment (shared)
+
+Pages / Routes:
+	•	Public: /store/*
+	•	Admin: /webshop/settings, /pos/terminal, /pos/sessions
+
+Core features:
+	•	Storefront product pages, cart, checkout (payment gateways)
+	•	POS terminal with offline capability and sync
+	•	Multi-channel inventory consistency
+
+Creative / advanced features:
+	•	Headless storefront using Next.js incremental static regeneration for speed + real-time stock overlays.
+	•	Smart up-sell engine: recommends bundles or add-ons based on cart and customer LTV (AI).
+	•	Unified promotions manager: supports cross-channel promotions with experiments/A-B testing.
+
+Integrations & jobs:
+	•	Payment gateway webhooks, shipping carriers API for labels & tracking
+	•	Marketplace connectors (Amazon/Shopify sync)
+
+Permissions:
+	•	ecom_manager, pos_operator
+
+KPIs:
+	•	Conversion rate, average order value (AOV), cart abandonment rate
+
+Implementation tips:
+	•	Use optimistic updates for checkout but final inventory reconciliation via server side.
+	•	For POS offline mode, implement conflict reconciliation rules (e.g., prefer first-committed).
+
+⸻
+
+11. Reporting & BI
+
+Purpose: Dashboards, scheduled reports, ad-hoc analysis and export.
+
+Models:
+	•	ReportDefinition, ReportRun, optional materialized views in DB or a dedicated analytics store.
+
+Pages / Routes:
+	•	/reports/dashboard, /reports/custom, /reports/schedules
+
+Core features:
+	•	Pre-built dashboards for Sales, Inventory, Finance, HR
+	•	Custom report builder with filters, grouping, aggregation
+	•	Scheduled report runs and email delivery
+
+Creative / advanced features:
+	•	Augmented BI assistant: natural-language search for data (e.g., “show revenue by region last 6 months”), returning charts and SQL.
+	•	Auto-insights: system highlights unusual trends (growth spikes, drop in sales of a SKU) using ML anomaly detection.
+	•	Self-serve cohort and LTV analysis with time-series forecasting models.
+
+Integrations & jobs:
+	•	ETL jobs to a data warehouse (e.g., BigQuery or Clickhouse) for heavy aggregations.
+	•	Materialized views refresh jobs.
+
+Permissions:
+	•	report_viewer, report_admin
+
+KPIs:
+	•	Load time for reports, scheduled report success rate, number of users using custom reports
+
+Implementation tips:
+	•	For heavy analytics, push data to a read-optimized store; don’t overload your OLTP DB with large aggregations.
+	•	Cache frequent queries and paginate heavy datasets.
+
+⸻
+
+12. Documents / DMS
+
+Purpose: Attach and version documents across entities, full-text search.
+
+Models:
+	•	Document, DocumentFolder, support metadata & tags; store file URLs
+
+Pages / Routes:
+	•	/documents, /documents/folders, attachments on entity detail pages
+
+Core features:
+	•	Upload, versioning, permissions, full-text search (Elasticsearch / PG fulltext)
+	•	Preview for PDFs/images
+
+Creative / advanced features:
+	•	Auto-tagging & OCR: extract text from PDFs for search and auto-classify contract types.
+	•	Contract lifecycle automation: detect renewals using parsed dates and trigger workflows.
+
+Integrations & jobs:
+	•	Virus scanning job, background OCR, storage lifecycle management
+
+Permissions:
+	•	document_upload, document_view, document_delete
+
+KPIs:
+	•	Documents per tenant, search success rate, storage usage
+
+Implementation tips:
+	•	Use pre-signed URLs for uploads; store only metadata in DB.
+
+⸻
+
+13. Integrations & Connectors
+
+Purpose: Provide reliable, managed connectors to external systems.
+
+Models:
+	•	IntegrationConnection, WebhookSubscription, IntegrationLog
+
+Pages / Routes:
+	•	/integrations, /integrations/[id], webhook management
+
+Core features:
+	•	OAuth connector flows, webhook management, scheduled syncs, mapping UI
+	•	Retry & DLQ for webhooks
+
+Creative / advanced features:
+	•	Connector marketplace: one-click installs for common connectors with templates and mapping presets.
+	•	Schema evolution manager: auto-detects changes in external schema and suggests mapping updates.
+
+Integrations & jobs:
+	•	Scheduled syncs, real-time webhook dispatchers
+
+Permissions:
+	•	integration_admin, integration_user
+
+KPIs:
+	•	Integration success/failure rate, average sync latency
+
+Implementation tips:
+	•	Use idempotency and checkpoints on incremental syncs.
+
+⸻
+
+14. Security, Compliance & Backup
+
+Purpose: Hardening system, PII management, backups, policy enforcement.
+
+Models / Settings:
+	•	DataRetentionPolicy, SecurityEvent (login failures etc.)
+
+Pages / Routes:
+	•	/security/settings, /backup, /audit
+
+Core features:
+	•	Field-level encryption for PII, SSO, 2FA, session management
+	•	GDPR: export & forget workflows
+	•	Backup orchestration & restore playbooks
+
+Creative / advanced features:
+	•	Risk score dashboard per tenant showing exposure levels and recommended hardening steps.
+	•	Access anomaly detection with email alerts for suspicious activity.
+
+Jobs / events:
+	•	Scheduled backups, integrity checks, pentest automation tasks
+
+Permissions:
+	•	security_admin, compliance_officer, backup_operator
+
+Implementation tips:
+	•	Rotate secrets regularly, monitor logs centrally, and apply least privilege.
+
+⸻
+
+15. Billing & SaaS Management
+
+Purpose: Monetize platform: plans, usage metering, invoicing tenants.
+
+Models:
+	•	Plan, Subscription, UsageMetric, TenantInvoice
+
+Pages / Routes:
+	•	/billing/plans, /billing/subscriptions, /billing/invoices
+
+Core features:
+	•	Subscription lifecycle (trial, active, past_due)
+	•	Usage-based billing and metering
+	•	Invoice generation & payment processing
+
+Creative / advanced features:
+	•	Forecasted billing: show tenants an estimated monthly spend based on trends and alerts before exceeding plan limits.
+	•	Self-service marketplace for add-ons (extra storage, premium modules).
+
+Integrations & jobs:
+	•	Stripe/PayPal integration, recurring invoice runner, failed-payment retry automation
+
+Permissions:
+	•	billing_admin, billing_view
+
+KPIs:
+	•	MRR, churn rate, ARPU
+
+Implementation tips:
+	•	Decouple billing engine from core operations to avoid billing failures blocking business flows.
+
+⸻
+
+16. Studio / Customization
+
+Purpose: Let tenants customize forms, add custom fields, define workflows, and manage UIs without code.
+
+Models:
+	•	CustomField, WorkflowDefinition, PageLayout
+
+Pages / Routes:
+	•	/studio/custom-fields, /studio/workflows, /studio/page-builder
+
+Core features:
+	•	Add custom fields on entities, render dynamically in forms & lists
+	•	Visual workflow builder (if-then triggers)
+	•	Page & form layout editor (drag & drop)
+
+Creative / advanced features:
+	•	Marketplace for workflow templates shared across tenants.
+	•	Safe sandbox for testing customizations on a staging dataset before publishing.
+
+Integrations & jobs:
+	•	Workflow engine with queue + retry for asynchronous actions
+
+Permissions:
+	•	studio_admin, studio_user
+
+Implementation tips:
+	•	Keep custom field definitions in a separate table and implement a dynamic form renderer.
+	•	Safeguard custom workflows (rate-limit, sandboxed execution) to prevent tenant custom code from harming platform.
+
+⸻
+
+Recommended Priorities for a Real Project (MVP → v1 → v2)
+
+MVP (get to usable product quickly):
+	1.	Core multi-tenant auth & RBAC
+	2.	Products & basic Inventory (single warehouse), basic Sales (quotes/orders)
+	3.	Bulk import (products) + stock-take flow
+	4.	Simple Accounting: invoice generation & payments integration
+	5.	Admin UI & settings
+
+v1 (next 3 months):
+	•	Multi-warehouse inventory, reservations, replenishment rules
+	•	Complete Purchasing & 3-way matching
+	•	Improved Accounting (journal entries, reconciliation)
+	•	Reporting & scheduled exports
+
+v2 (scale / differentiation):
+	•	Manufacturing, MRP, Quality control
+	•	POS & E-commerce headless storefront
+	•	Projects & timesheets
+	•	BI & AI features (forecasting, anomaly detection, assistant)
+
+⸻
+
+Cross-cutting technical recommendations
+	•	Tech stack: Next.js App Router (React) + Node API (or Next API routes) + Prisma + PostgreSQL (JSONB where helpful) + Redis + BullMQ for queues + object storage (S3) + ClickHouse/BigQuery later for analytics.
+	•	Architecture: Shared DB multi-tenancy (tenantId on each row) for MVP. Design to allow schema-per-tenant or DB-per-tenant in future.
+	•	Realtime: Use WebSockets or server-sent events for live inventory and job updates.
+	•	Background processing: All heavy operations (imports, exports, image processing, scheduled reports, AI inference) go to a job queue.
+	•	Observability: Central logging, tracing (OpenTelemetry), alerting for failed jobs, and metrics (Prometheus/Grafana).
+	•	Security: Column-level encryption for PII, rate limiting, SSO support, CSP, regular pen-testing.
+	•	Testing: Unit+integration tests for business logic, contract tests for external integrations; seed realistic test data per tenant.
+
+⸻
+
+Next actionable steps I can do for you immediately (pick one or more)
+	1.	Generate complete Prisma schema for selected modules (Core + Products + Inventory + Import jobs + Sales) — ready to prisma migrate.
+	2.	Produce an API contract (OpenAPI) for the MVP modules (auth, products, import, stock-take, sales) so front-end can start.
+	3.	Scaffold Next.js folder structure & sample pages/components for Products import + Stock-take UI (TSX + Tailwind).
+	4.	Provide DB migration scripts and seed data for demo tenant.
+	5.	Sketch wireframes (text-based or simple PNGs) for bulk import wizard and stock-take mobile UI.
+
+Tell me which one you want first (or ask for the Prisma schema here) and I’ll generate it right away — everything done in this chat.
